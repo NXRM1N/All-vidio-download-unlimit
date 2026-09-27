@@ -1,12 +1,15 @@
 """UNI DOWNLOAD - simple GUI video downloader built on yt-dlp."""
 import os
 import queue
+import shutil
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from yt_dlp import YoutubeDL
 
+# Presets that require ffmpeg to merge separate video+audio streams into one file.
 QUALITY_PRESETS = {
     "Лучшее качество": "bestvideo+bestaudio/best",
     "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
@@ -14,6 +17,27 @@ QUALITY_PRESETS = {
     "480p": "bestvideo[height<=480]+bestaudio/best[height<=480]",
     "Только звук (MP3)": "bestaudio/best",
 }
+
+# Fallback presets used when ffmpeg is unavailable: a single already-muxed
+# format is selected instead, so no merge/conversion step is ever needed.
+QUALITY_PRESETS_NO_FFMPEG = {
+    "Лучшее качество": "best",
+    "1080p": "best[height<=1080]",
+    "720p": "best[height<=720]",
+    "480p": "best[height<=480]",
+    "Только звук (MP3)": "bestaudio/best",
+}
+
+
+def find_ffmpeg() -> str | None:
+    """Locate ffmpeg: bundled next to a frozen (PyInstaller) exe first, then PATH."""
+    if getattr(sys, "frozen", False):
+        base_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        for name in ("ffmpeg.exe", "ffmpeg"):
+            candidate = os.path.join(base_dir, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return shutil.which("ffmpeg")
 
 
 class App(tk.Tk):
@@ -119,7 +143,16 @@ class App(tk.Tk):
 
     def _download_all(self, urls: list[str]):
         want_audio_only = self.quality.get() == "Только звук (MP3)"
-        format_spec = QUALITY_PRESETS[self.quality.get()]
+        ffmpeg_path = find_ffmpeg()
+
+        if ffmpeg_path:
+            format_spec = QUALITY_PRESETS[self.quality.get()]
+        else:
+            format_spec = QUALITY_PRESETS_NO_FFMPEG[self.quality.get()]
+            self._log(
+                "ffmpeg не найден: буду скачивать готовый файл без склейки/конвертации "
+                "(качество может быть ниже, а звук — не в MP3)."
+            )
 
         ydl_opts = {
             "format": format_spec,
@@ -129,7 +162,9 @@ class App(tk.Tk):
             "quiet": True,
             "no_warnings": True,
         }
-        if want_audio_only:
+        if ffmpeg_path:
+            ydl_opts["ffmpeg_location"] = ffmpeg_path
+        if want_audio_only and ffmpeg_path:
             ydl_opts["postprocessors"] = [
                 {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
             ]
